@@ -49,10 +49,7 @@ class Serde:
         for i in range(0, list_len, item_size):
             try:
                 output.append(self._serialize(item_type, segment_ptr + i))
-            # Because there is no way to know for sure the length of the list, we stop when we
-            # encounter an error.
-            # trunk-ignore(ruff/E722)
-            except:
+            except IndexError:  # Specify IndexError for better debugging
                 break
         return output
 
@@ -76,14 +73,14 @@ class Serde:
             else:
                 output[key] = (
                     self.serialize_scope(value_scope, value_ptr)
-                    if value_ptr != 0
+                    if value_ptr is not None and value_ptr != 0  # Added None check
                     else None
                 )
         return output
 
     def serialize_pointers(self, name, ptr):
         """
-        Serialize a pointer to a struct, e.g. Uint256*.
+        Serialize a pointer to a struct (e.g., Uint256*).
         """
         members = self.get_identifier(name, StructDefinition).members
         output = {}
@@ -96,7 +93,7 @@ class Serde:
 
     def serialize_struct(self, name, ptr):
         """
-        Serialize a struct, e.g. Uint256.
+        Serialize a struct, e.g., Uint256.
         """
         if ptr is None:
             return None
@@ -109,8 +106,8 @@ class Serde:
     def serialize_address(self, ptr):
         raw = self.serialize_pointers("model.Address", ptr)
         return {
-            "starknet": f'0x{raw["starknet"]:064x}',
-            "evm": to_checksum_address(f'{raw["evm"]:040x}'),
+            "starknet": f'0x{raw.get("starknet", 0):064x}',
+            "evm": to_checksum_address(f'{raw.get("evm", 0):040x}'),
         }
 
     def serialize_uint256(self, ptr):
@@ -153,8 +150,8 @@ class Serde:
             "max_priority_fee_per_gas": raw["max_priority_fee_per_gas"],
             "max_fee_per_gas": raw["max_fee_per_gas"],
             "destination": (
-                to_checksum_address(f'0x{raw["destination"]["value"]:040x}')
-                if raw["destination"]["is_some"] == 1
+                to_checksum_address(f'0x{raw.get("destination", {}).get("value", 0):040x}')
+                if raw.get("destination", {}).get("is_some") == 1
                 else None
             ),
             "amount": raw["amount"],
@@ -191,34 +188,6 @@ class Serde:
             "depth": raw["depth"],
             "env": self.serialize_struct("model.Environment", raw["env"]),
         }
-
-    def serialize_evm(self, ptr):
-        evm = self.serialize_struct("model.EVM", ptr)
-        return {
-            "message": evm["message"],
-            "return_data": evm["return_data"][: evm["return_data_len"]],
-            "program_counter": evm["program_counter"],
-            "stopped": bool(evm["stopped"]),
-            "gas_left": evm["gas_left"],
-            "gas_refund": evm["gas_refund"],
-            "reverted": evm["reverted"],
-        }
-
-    def serialize_stack(self, ptr):
-        raw = self.serialize_pointers("model.Stack", ptr)
-        stack_dict = self.serialize_dict(
-            raw["dict_ptr_start"], "Uint256", raw["dict_ptr"] - raw["dict_ptr_start"]
-        )
-        return [stack_dict[i] for i in range(raw["size"])]
-
-    def serialize_memory(self, ptr):
-        raw = self.serialize_pointers("model.Memory", ptr)
-        memory_dict = self.serialize_dict(
-            raw["word_dict_start"], dict_size=raw["word_dict"] - raw["word_dict_start"]
-        )
-        return "".join(
-            [f"{memory_dict.get(i, 0):032x}" for i in range(raw["words_len"] * 2)]
-        )
 
     def serialize_rlp_item(self, ptr):
         raw = self.serialize_list(ptr)
@@ -261,10 +230,7 @@ class Serde:
 
     def _serialize(self, cairo_type, ptr, length=1):
         if isinstance(cairo_type, TypePointer):
-            # A pointer can be a pointer to one single struct or to the beginning of a list of structs.
-            # As such, every pointer is considered a list of structs, with length 1 or more.
             pointee = self.memory.get(ptr)
-            # Edge case: 0 pointers are not pointer but no data
             if pointee == 0:
                 return None
             if isinstance(cairo_type.pointee, TypeFelt):
