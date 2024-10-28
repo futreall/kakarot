@@ -26,7 +26,11 @@ def timeit(fun: T) -> T:
     @wraps(fun)
     async def timed_fun(*args, **kwargs):
         start = perf_counter()
-        res = await fun(*args, **kwargs)
+        try:
+            res = await fun(*args, **kwargs)
+        except Exception as e:
+            logger.error(f"Error in {fun.__name__}:", exc_info=True)
+            raise e
         stop = perf_counter()
         duration = stop - start
         _time_report.append(
@@ -43,19 +47,20 @@ def timeit(fun: T) -> T:
 def dump_coverage(path: Union[str, Path], files: List[CoverageFile]):
     p = Path(path)
     p.mkdir(exist_ok=True, parents=True)
-    json.dump(
-        {
-            "coverage": {
-                file.name.split("__main__/")[-1]: {
-                    **{line: 0 for line in file.missed},
-                    **{line: 1 for line in file.covered},
+    with open(p / "coverage.json", "w") as f:
+        json.dump(
+            {
+                "coverage": {
+                    file.name.split("__main__/")[-1]: {
+                        **{line: 0 for line in file.missed},
+                        **{line: 1 for line in file.covered},
+                    }
+                    for file in files
                 }
-                for file in files
-            }
-        },
-        open(p / "coverage.json", "w"),
-        indent=2,
-    )
+            },
+            f,
+            indent=2,
+        )
 
 
 def profile_from_tracer_data(tracer_data):
@@ -72,28 +77,29 @@ def profile_from_tracer_data(tracer_data):
     for name, ident in tracer_data.program.identifiers.as_dict().items():
         if not isinstance(ident, LabelDefinition):
             continue
-        builder.function_id(
-            name=_label_scope.get(str(name), str(name)),
-            inst_location=tracer_data.program.debug_info.instruction_locations[
-                ident.pc
-            ],
-        )
+        inst_location = tracer_data.program.debug_info.instruction_locations.get(ident.pc)
+        if inst_location:
+            builder.function_id(
+                name=_label_scope.get(str(name), str(name)),
+                inst_location=inst_location,
+            )
 
     # Locations.
-    for (
-        pc_offset,
-        inst_location,
-    ) in tracer_data.program.debug_info.instruction_locations.items():
-        builder.location_id(
-            pc=tracer_data.get_pc_from_offset(pc_offset),
-            inst_location=inst_location,
-        )
+    for pc_offset, inst_location in tracer_data.program.debug_info.instruction_locations.items():
+        try:
+            builder.location_id(
+                pc=tracer_data.get_pc_from_offset(pc_offset),
+                inst_location=inst_location,
+            )
+        except KeyError as e:
+            logger.warning(f"PC offset {pc_offset} out of bounds: {e}")
 
     # Samples.
     for trace_entry in tracer_data.trace:
         try:
             builder.add_sample(trace_entry)
         except KeyError:
-            pass
+            logger.warning(f"Trace entry {trace_entry} caused a KeyError")
+            continue
 
     return builder.dump()
