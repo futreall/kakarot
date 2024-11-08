@@ -3,6 +3,7 @@
 %lang starknet
 
 from openzeppelin.access.ownable.library import Ownable
+from openzeppelin.security.reentrancyguard.library import ReentrancyGuard
 from starkware.cairo.common.bool import FALSE, TRUE
 from starkware.cairo.common.cairo_builtins import HashBuiltin, BitwiseBuiltin
 from starkware.starknet.common.syscalls import get_caller_address, get_tx_info
@@ -98,6 +99,9 @@ namespace Kakarot {
         access_list: felt*,
     ) -> (model.EVM*, model.State*, felt, felt) {
         alloc_locals;
+
+        ReentrancyGuard.start();
+
         let is_regular_tx = is_not_zero(to.is_some);
         let is_deploy_tx = 1 - is_regular_tx;
         let evm_contract_address = resolve_to(to, origin, nonce);
@@ -122,6 +126,8 @@ namespace Kakarot {
             access_list_len,
             access_list,
         );
+
+        ReentrancyGuard.end();
         return (evm, state, gas_used, required_gas);
     }
 
@@ -395,6 +401,11 @@ namespace Kakarot {
         return l1_messaging_contract_address;
     }
 
+    // @notice Handle an L1 message
+    //         Gas is paid on L1 through the starknet messaging system hence this should not
+    //         revert due to OOG.
+    //         The gas limit is set to Constants.INFINITE_GAS.
+    //         The gas price is set to 0 so no gas is paid and no refund is given.
     func handle_l1_message{
         syscall_ptr: felt*,
         pedersen_ptr: HashBuiltin*,
@@ -410,7 +421,7 @@ namespace Kakarot {
         let (access_list) = alloc();
 
         return eth_call(
-            0, l1_sender, to, 2100000000, 1, value_u256, data_len, data, 0, access_list
+            0, l1_sender, to, Constants.INFINITE_GAS, 0, value_u256, data_len, data, 0, access_list
         );
     }
 
